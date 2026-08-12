@@ -1,5 +1,6 @@
 package com.app.oneklikai.controller.admin;
 
+import com.app.oneklikai.model.TimeFrame;
 import com.app.oneklikai.service.CsvService;
 import jakarta.validation.constraints.NotNull;
 import lombok.RequiredArgsConstructor;
@@ -15,8 +16,7 @@ public class CsvController {
     private final CsvService csvService;
 
     @PostMapping(value = "/yahoo/{symbol}", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
-    public void saveYahooCandleSticks(@PathVariable @NotNull String symbol, @RequestParam("file") @NotNull MultipartFile file) {
-        csvService.saveYahooCandleSticks(symbol, file);
-        System.out.println(CsvService.candleSticks.get(symbol).size());
+    public void saveYahooCandleSticks(@PathVariable @NotNull String symbol, @RequestParam("file") @NotNull MultipartFile file, @RequestParam @NotNull TimeFrame timeFrame) {
+        csvService.saveYahooCandleSticks(symbol, file, timeFrame);
     }
 }

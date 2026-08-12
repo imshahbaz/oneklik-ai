@@ -1,5 +1,6 @@
 package com.app.oneklikai.controller.admin;
 
+import com.app.oneklikai.constant.Constants;
 import com.app.oneklikai.model.dto.response.PredictionResponse;
 import com.app.oneklikai.service.CandleDataService;
 import lombok.RequiredArgsConstructor;
@@ -13,18 +14,12 @@ public class CandleDataController {
     private final CandleDataService candleDataService;
 
     @PostMapping("/train")
-    public void train(
-            @RequestParam("symbol") String symbol,
-            @RequestParam(name = "sequenceLength", defaultValue = "60") int sequenceLength,
-            @RequestParam(name = "epochs", defaultValue = "40") int epochs,
-            @RequestParam(name = "learningRate", defaultValue = "0.0005") float learningRate) {
-        candleDataService.trainModel(symbol, sequenceLength, epochs, learningRate);
+    public void train(@RequestParam("symbol") String symbol) {
+        candleDataService.trainModel(symbol, Constants.DAILY_SEQUENCE_LENGTH, Constants.DAILY_EPOCHS, Constants.DAILY_LEARNING_RATE);
     }
 
     @GetMapping("/predict")
-    public PredictionResponse predict(
-            @RequestParam("symbol") String symbol,
-            @RequestParam(name = "sequenceLength", defaultValue = "60") int sequenceLength) {
-        return candleDataService.predictNextDay(CandleDataService.model, symbol, sequenceLength);
+    public PredictionResponse predict(@RequestParam("symbol") String symbol) {
+        return candleDataService.predictNextDay(Constants.DAILY_MODEL, symbol, Constants.DAILY_SEQUENCE_LENGTH);
     }
 }
