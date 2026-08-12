@@ -11,7 +11,6 @@ import ai.djl.nn.LambdaBlock;
 import ai.djl.nn.SequentialBlock;
 import ai.djl.nn.core.Linear;
 import ai.djl.nn.recurrent.LSTM;
-import ai.djl.nn.transformer.TransformerEncoderBlock;
 
 public class DataTransformerBlock {
 
@@ -55,10 +54,10 @@ public class DataTransformerBlock {
         int idx = 0;
 
         // 2. Flatten 3D matrix into 1D
-        for (int i = 0; i < dim1; i++) {
+        for (float[][] datum : data) {
             for (int j = 0; j < dim2; j++) {
                 for (int k = 0; k < dim3; k++) {
-                    flat[idx++] = data[i][j][k];
+                    flat[idx++] = datum[j][k];
                 }
             }
         }

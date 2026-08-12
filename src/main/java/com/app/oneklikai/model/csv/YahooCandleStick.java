@@ -1,5 +1,6 @@
 package com.app.oneklikai.model.csv;
 
+import com.app.oneklikai.model.TimeFrame;
 import com.app.oneklikai.model.entity.CandleStick;
 import lombok.Builder;
 
@@ -9,17 +10,18 @@ import java.time.format.DateTimeFormatter;
 
 @Builder
 public record YahooCandleStick(
-    OffsetDateTime timestamp,
-    double open,
-    double high,
-    double low,
-    double close,
-    double volume
+        OffsetDateTime timestamp,
+        double open,
+        double high,
+        double low,
+        double close,
+        double volume,
+        TimeFrame timeFrame
 ) {
-    public static final DateTimeFormatter FORMATTER = 
+    public static final DateTimeFormatter FORMATTER =
             DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ssXXX");
 
-    public CandleStick toEntity(String symbol){
+    public CandleStick toEntity(String symbol) {
         return CandleStick.builder()
                 .symbol(symbol)
                 .open(open)
@@ -28,6 +30,7 @@ public record YahooCandleStick(
                 .close(close)
                 .volume(volume)
                 .timestamp(this.timestamp.atZoneSameInstant(ZoneId.of("Asia/Kolkata")).toInstant())
+                .timeFrame(timeFrame)
                 .build();
     }
 }

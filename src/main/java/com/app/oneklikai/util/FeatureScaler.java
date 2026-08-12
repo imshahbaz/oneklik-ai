@@ -1,17 +1,17 @@
 package com.app.oneklikai.util;
 
-import com.app.oneklikai.model.csv.YahooCandleStick;
+import com.app.oneklikai.model.entity.CandleStick;
 
 public class FeatureScaler {
 
-    public static float[] normalizeCandle(YahooCandleStick candle, double basePrice) {
+    public static float[] normalizeCandle(CandleStick candle, double basePrice) {
         // Log-scaling balances volume variance with percentage price changes:
-        float logVolume = (float) Math.log1p(candle.volume()) / 20.0f;
+        float logVolume = (float) Math.log1p(candle.getVolume()) / 20.0f;
         return new float[]{
-                (float) ((candle.open() - basePrice) / basePrice),
-                (float) ((candle.high() - basePrice) / basePrice),
-                (float) ((candle.low() - basePrice) / basePrice),
-                (float) ((candle.close() - basePrice) / basePrice),
+                (float) ((candle.getOpen() - basePrice) / basePrice),
+                (float) ((candle.getHigh() - basePrice) / basePrice),
+                (float) ((candle.getLow() - basePrice) / basePrice),
+                (float) ((candle.getClose() - basePrice) / basePrice),
                 logVolume
         };
     }
@@ -24,4 +24,16 @@ public class FeatureScaler {
         double scaledLog = normalizedLogVolume * 20.0;
         return Math.expm1(scaledLog);
     }
+
+    public static float[] normalizeRawCandle(float[] candle, double basePrice) {
+        float logVolume = (float) Math.log1p(candle[4]) / 20.0f;
+        return new float[]{
+                (float) ((candle[0] - basePrice) / basePrice),
+                (float) ((candle[1] - basePrice) / basePrice),
+                (float) ((candle[2] - basePrice) / basePrice),
+                (float) ((candle[3] - basePrice) / basePrice),
+                logVolume
+        };
+    }
+
 }

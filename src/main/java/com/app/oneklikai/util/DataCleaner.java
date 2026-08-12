@@ -15,4 +15,16 @@ public class DataCleaner {
                 .sorted(Comparator.comparing(YahooCandleStick::timestamp))
                 .toList();
     }
+
+    public static boolean isValid(YahooCandleStick candle) {
+        if (candle == null || candle.timestamp() == null) {
+            return false;
+        }
+
+        return candle.open() > 0
+                && candle.high() > 0
+                && candle.low() > 0
+                && candle.close() > 0
+                && candle.volume() >= 0;
+    }
 }

@@ -1,5 +1,6 @@
 package com.app.oneklikai.model.entity;
 
+import com.app.oneklikai.model.TimeFrame;
 import com.app.oneklikai.model.csv.YahooCandleStick;
 import lombok.*;
 import lombok.experimental.FieldDefaults;
@@ -26,6 +27,7 @@ public class CandleStick {
     double low;
     double close;
     double volume;
+    TimeFrame timeFrame;
 
     public YahooCandleStick toYahooCandleStick() {
         return YahooCandleStick.builder()
@@ -35,6 +37,7 @@ public class CandleStick {
                 .close(close)
                 .volume(volume)
                 .timestamp(timestamp.atZone(ZoneId.of("Asia/Kolkata")).toOffsetDateTime())
+                .timeFrame(timeFrame)
                 .build();
     }
 }
