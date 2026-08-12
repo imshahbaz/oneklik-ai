@@ -38,13 +38,33 @@ public class CsvLoader {
     }
 
     private static YahooCandleStick parseRecord(CSVRecord record, TimeFrame timeFrame) {
-        OffsetDateTime timestamp = OffsetDateTime.parse(record.get("Date"), YahooCandleStick.FORMATTER);
-        double open = Double.parseDouble(record.get("Open"));
-        double high = Double.parseDouble(record.get("High"));
-        double low = Double.parseDouble(record.get("Low"));
-        double close = Double.parseDouble(record.get("Close"));
-        double volume = Double.parseDouble(record.get("Volume"));
+        try {
+            String dateStr = record.get("Date");
+            String openStr = record.get("Open");
+            String highStr = record.get("High");
+            String lowStr = record.get("Low");
+            String closeStr = record.get("Close");
+            String volumeStr = record.get("Volume");
 
-        return new YahooCandleStick(timestamp, open, high, low, close, volume, timeFrame);
+            if (isInvalid(dateStr) || isInvalid(openStr) || isInvalid(highStr) ||
+                    isInvalid(lowStr) || isInvalid(closeStr) || isInvalid(volumeStr)) {
+                return null;
+            }
+
+            OffsetDateTime timestamp = OffsetDateTime.parse(record.get("Date"), YahooCandleStick.FORMATTER);
+            double open = Double.parseDouble(record.get("Open"));
+            double high = Double.parseDouble(record.get("High"));
+            double low = Double.parseDouble(record.get("Low"));
+            double close = Double.parseDouble(record.get("Close"));
+            double volume = Double.parseDouble(record.get("Volume"));
+
+            return new YahooCandleStick(timestamp, open, high, low, close, volume, timeFrame);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private static boolean isInvalid(String value) {
+        return value == null || value.trim().isEmpty() || "null".equalsIgnoreCase(value.trim());
     }
 }

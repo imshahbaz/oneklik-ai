@@ -5,7 +5,7 @@ import com.app.oneklikai.model.dto.response.PredictionResponse;
 
 public interface CandleDataService {
 
-    void trainModel(String symbol, int sequenceLength, int epochs, float learningRate);
+    void trainModel(int sequenceLength, int epochs, float learningRate);
 
     PredictionResponse predictNextDay(Model trainedModel, String symbol, int sequenceLength);
 }

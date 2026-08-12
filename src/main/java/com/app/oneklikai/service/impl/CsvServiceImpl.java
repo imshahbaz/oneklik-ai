@@ -33,7 +33,7 @@ public class CsvServiceImpl implements CsvService {
             return;
         }
 
-        final int BATCH_SIZE = 5000;
+        final int BATCH_SIZE = 500;
         List<CandleStick> batchBuffer = new ArrayList<>(BATCH_SIZE);
 
         try (Reader reader = new InputStreamReader(file.getInputStream())) {
