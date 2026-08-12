@@ -1,0 +1,56 @@
+spring:
+  application:
+    name: OneKlikAi
+
+  jackson:
+    deserialization:
+      fail-on-null-for-primitives: false
+      accept-empty-string-as-null-object: true
+
+  main:
+    lazy-initialization: false
+
+  threads:
+    virtual:
+      enabled: false
+
+  jmx:
+    enabled: false
+
+  mongodb:
+    uri: ${MONGO_URI}
+
+  cloud:
+    openfeign:
+      compression:
+        request:
+          enabled: true
+        response:
+          enabled: true
+      client:
+        config:
+          default:
+            connect-timeout: 5000
+            read-timeout: 15000
+            logger-level: basic
+
+server:
+  address: 0.0.0.0
+  port: ${PORT:8080}
+  jetty:
+    threads:
+      min: 32
+      max: 200
+      idle-timeout: 60000
+
+# Expose a lightweight health endpoint for readiness/liveness probes and deploy gating.
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: never

@@ -50,3 +50,4 @@ build/
 # IDE & OS Files
 .idea/
 .settings/
+*.env
