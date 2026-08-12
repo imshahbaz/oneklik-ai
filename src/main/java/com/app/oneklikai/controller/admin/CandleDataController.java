@@ -14,8 +14,8 @@ public class CandleDataController {
     private final CandleDataService candleDataService;
 
     @PostMapping("/train")
-    public void train(@RequestParam("symbol") String symbol) {
-        candleDataService.trainModel(symbol, Constants.DAILY_SEQUENCE_LENGTH, Constants.DAILY_EPOCHS, Constants.DAILY_LEARNING_RATE);
+    public void train() {
+        candleDataService.trainModel(Constants.DAILY_SEQUENCE_LENGTH, Constants.DAILY_EPOCHS, Constants.DAILY_LEARNING_RATE);
     }
 
     @GetMapping("/predict")

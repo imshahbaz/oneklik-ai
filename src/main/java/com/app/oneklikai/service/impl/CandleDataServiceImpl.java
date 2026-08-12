@@ -1,6 +1,7 @@
 package com.app.oneklikai.service.impl;
 
 import ai.djl.Model;
+import ai.djl.inference.Predictor;
 import ai.djl.ndarray.NDArray;
 import ai.djl.ndarray.NDList;
 import ai.djl.ndarray.NDManager;
@@ -13,107 +14,166 @@ import ai.djl.training.dataset.Batch;
 import ai.djl.training.loss.Loss;
 import ai.djl.training.optimizer.Optimizer;
 import ai.djl.training.tracker.Tracker;
+import ai.djl.translate.NoopTranslator;
 import ai.djl.translate.TranslateException;
 import com.app.oneklikai.constant.Constants;
 import com.app.oneklikai.model.dto.response.PredictionResponse;
 import com.app.oneklikai.model.entity.CandleStick;
+import com.app.oneklikai.model.entity.ModelWeightEntity;
 import com.app.oneklikai.repo.CandleStickRepo;
+import com.app.oneklikai.repo.ModelWeightRepository;
 import com.app.oneklikai.service.CandleDataService;
 import com.app.oneklikai.util.DataTransformerBlock;
 import com.app.oneklikai.util.DatasetBuilder;
 import com.app.oneklikai.util.FeatureScaler;
+import com.app.oneklikai.util.MemoryModelSerializer;
 import lombok.RequiredArgsConstructor;
 import lombok.SneakyThrows;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.boot.context.event.ApplicationReadyEvent;
+import org.springframework.context.event.EventListener;
+import org.springframework.data.mongodb.core.MongoTemplate;
 import org.springframework.stereotype.Service;
 
-import java.io.IOException;
+import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneId;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class CandleDataServiceImpl implements CandleDataService {
 
     private final CandleStickRepo candleStickRepo;
+    private final ModelWeightRepository modelWeightRepository;
+    private final MongoTemplate mongoTemplate;
 
-    @SneakyThrows
+    @EventListener(ApplicationReadyEvent.class)
+    public void loadGlobalModelFromDatabase() {
+        log.info("Checking for pre-trained global model in database...");
+        Optional<ModelWeightEntity> savedWeight = modelWeightRepository.findById(Constants.DAILY_MODEL_NAME);
+        var model = Constants.DAILY_MODEL;
+        model.setBlock(DataTransformerBlock.buildArchitecture(Constants.DAILY_FEATURE_DIM, Constants.DAILY_EMBED_DIM));
+        if (savedWeight.isPresent()) {
+            try {
+                byte[] weightBytes = savedWeight.get().getWeightBytes();
+                MemoryModelSerializer.deserializeFromBytes(model, weightBytes, Constants.DAILY_MODEL_NAME);
+                log.info("Successfully loaded Global Model weights from DB (Updated: {}, Size: {} KB)",
+                        savedWeight.get().getUpdatedAt(), (weightBytes.length / 1024));
+            } catch (Exception e) {
+                log.error("Failed to load global model weights from DB: {}", e.getMessage(), e);
+            }
+        } else {
+            log.info("No saved global model found in database. Fresh architecture initialized in RAM.");
+        }
+    }
+
     @Override
-    public void trainModel(String symbol, int sequenceLength, int epochs, float learningRate) {
-        String stockSymbol = symbol.toUpperCase();
+    @SneakyThrows
+    public void trainModel( int sequenceLength, int epochs, float learningRate) {
+        List<String> symbols = mongoTemplate.findDistinct("symbol", CandleStick.class, String.class);
+        if (symbols.isEmpty()) {
+            return;
+        }
 
-        try (var stream = candleStickRepo.findBySymbolOrderByTimestampAsc(symbol)) {
-            DatasetBuilder.TrainingBatch batch = DatasetBuilder.buildSlidingWindows(stream, sequenceLength);
-            int numSamples = batch.inputSequences().length;
-            int featureDim = 5;
-            int embedDim = 64;
+        log.info("Found {} distinct stock symbols in MongoDB. Aggregating dataset...", symbols.size());
 
-            // Create DJL Model Container
-            try (NDManager manager = NDManager.newBaseManager()) {
+        List<float[][]> allInputs = new ArrayList<>();
+        List<float[][]> allTargets = new ArrayList<>();
 
-                // Set Network Block
-                Constants.DAILY_MODEL.setBlock(DataTransformerBlock.buildArchitecture(featureDim, embedDim));
-
-                // Configure Optimizer and Loss Function
-                DefaultTrainingConfig config = new DefaultTrainingConfig(Loss.l2Loss())
-                        .optOptimizer(Optimizer.adam().optLearningRateTracker(Tracker.fixed(learningRate)).build());
-
-                try (Trainer trainer = Constants.DAILY_MODEL.newTrainer(config)) {
-
-                    // Initialize weights based on input tensor shape [BatchSize, SeqLen, Features]
-                    trainer.initialize(new Shape(1, sequenceLength, featureDim));
-
-                    // Convert Java float[][][] arrays to Off-Heap Native C++ Tensors
-                    NDArray inputTensor = DataTransformerBlock.create3DTensor(manager, batch.inputSequences());
-                    NDArray targetTensor = DataTransformerBlock.create3DTensor(manager, batch.targetCandles());
-
-                    System.out.printf("Starting Training on %s | Samples: %d | Epochs: %d...%n", stockSymbol, numSamples, epochs);
-
-                    ArrayDataset dataset = new ArrayDataset.Builder()
-                            .setData(inputTensor)
-                            .optLabels(targetTensor)
-                            .setSampling(32, true) // Batch size = 32, Shuffle = true
-                            .build();
-
-                    for (int epoch = 1; epoch <= epochs; epoch++) {
-                        float accumulatedLoss = 0.0f;
-                        int batchCount = 0;
-
-                        try {
-                            for (Batch miniBatch : trainer.iterateDataset(dataset)) {
-                                try (GradientCollector gc = trainer.newGradientCollector()) {
-
-                                    // Forward Pass on Mini-Batch
-                                    NDArray predictions = trainer.forward(miniBatch.getData()).singletonOrThrow();
-
-                                    // Calculate MSE Loss on Mini-Batch Labels
-                                    NDArray loss = trainer.getLoss().evaluate(miniBatch.getLabels(), new NDList(predictions));
-
-                                    // Backward Pass & Step
-                                    gc.backward(loss);
-                                    trainer.step();
-
-                                    accumulatedLoss += loss.getFloat();
-                                    batchCount++;
-                                }
-                                miniBatch.close(); // Prevent C++ native memory leaks
-                            }
-                        } catch (IOException e) {
-                            throw new RuntimeException(e);
-                        } catch (TranslateException e) {
-                            throw new RuntimeException(e);
-                        }
-
-                        if (epoch % 5 == 0 || epoch == epochs) {
-                            float avgLoss = accumulatedLoss / Math.max(1, batchCount);
-                            System.out.printf("Epoch %d/%d - Avg Batch Loss: %.6f%n", epoch, epochs, avgLoss);
-                        }
-                    }
+        for (String symbol : symbols) {
+            try (var stream = candleStickRepo.findBySymbolOrderByTimestampAsc(symbol)) {
+                DatasetBuilder.TrainingBatch batch = DatasetBuilder.buildSlidingWindows(stream, sequenceLength);
+                for (int i = 0; i < batch.inputSequences().length; i++) {
+                    allInputs.add(batch.inputSequences()[i]);
+                    allTargets.add(batch.targetCandles()[i]);
                 }
-
+            } catch (Exception e) {
+                log.warn("Skipping symbol {} during dataset assembly: {}", symbol, e.getMessage());
             }
         }
 
+        if (allInputs.isEmpty()) {
+            throw new IllegalArgumentException("No dataset samples collected across symbols.");
+        }
+
+        int totalSamples = allInputs.size();
+        log.info("Dataset aggregated successfully. Total Global Training Samples: {}", totalSamples);
+
+        float[][][] inputData = allInputs.toArray(new float[0][][]);
+        float[][][] targetData = allTargets.toArray(new float[0][][]);
+
+        // 3. Train Global Model
+        Model globalModel = Model.newInstance(Constants.DAILY_MODEL_NAME);
+        globalModel.setBlock(DataTransformerBlock.buildArchitecture(Constants.DAILY_FEATURE_DIM, Constants.DAILY_EMBED_DIM));
+
+        DefaultTrainingConfig config = new DefaultTrainingConfig(Loss.l2Loss())
+                .optOptimizer(Optimizer.adam().optLearningRateTracker(Tracker.fixed(learningRate)).build());
+
+        float finalLoss = 0.0f;
+
+        try (NDManager manager = NDManager.newBaseManager();
+             Trainer trainer = globalModel.newTrainer(config)) {
+
+            trainer.initialize(new Shape(1, sequenceLength, Constants.DAILY_FEATURE_DIM));
+
+            NDArray inputTensor = DataTransformerBlock.create3DTensor(manager, inputData);
+            NDArray targetTensor = DataTransformerBlock.create3DTensor(manager, targetData);
+
+            ArrayDataset dataset = new ArrayDataset.Builder()
+                    .setData(inputTensor)
+                    .optLabels(targetTensor)
+                    .setSampling(32, true)
+                    .build();
+
+            log.info("Starting Global Model Training | Stocks: {} | Samples: {} | Epochs: {}...",
+                    symbols.size(), totalSamples, epochs);
+
+            for (int epoch = 1; epoch <= epochs; epoch++) {
+                float accumulatedLoss = 0.0f;
+                int batchCount = 0;
+
+                for (Batch miniBatch : trainer.iterateDataset(dataset)) {
+                    try (GradientCollector gc = trainer.newGradientCollector()) {
+                        NDArray predictions = trainer.forward(miniBatch.getData()).singletonOrThrow();
+                        NDArray loss = trainer.getLoss().evaluate(miniBatch.getLabels(), new NDList(predictions));
+
+                        gc.backward(loss);
+                        trainer.step();
+
+                        accumulatedLoss += loss.getFloat();
+                        batchCount++;
+                    }
+                    miniBatch.close();
+                }
+
+                finalLoss = accumulatedLoss / Math.max(1, batchCount);
+                if (epoch % 5 == 0 || epoch == epochs) {
+                    log.info("Global Model | Epoch {}/{} - Avg Batch Loss: {}", epoch, epochs, finalLoss);
+                }
+            }
+        }
+
+        // 4. Save trained weights to MongoDB
+        byte[] weightBytes = MemoryModelSerializer.serializeToBytes(globalModel);
+
+        ModelWeightEntity weightEntity = modelWeightRepository.findById(Constants.DAILY_MODEL_NAME)
+                .orElseGet(() -> ModelWeightEntity.builder().name(Constants.DAILY_MODEL_NAME).build());
+
+        weightEntity.setWeightBytes(weightBytes);
+        weightEntity.setSequenceLength(sequenceLength);
+        weightEntity.setFeatureDim(Constants.DAILY_FEATURE_DIM);
+        weightEntity.setFinalLoss(finalLoss);
+        weightEntity.setUpdatedAt(Instant.now());
+
+        modelWeightRepository.save(weightEntity);
+        Constants.DAILY_MODEL = globalModel;
+
+        log.info("Global Model successfully trained on {} stocks and persisted to MongoDB ({} KB).",
+                symbols.size(), (weightBytes.length / 1024));
     }
 
     @Override
@@ -133,14 +193,14 @@ public class CandleDataServiceImpl implements CandleDataService {
 
         // 3. Run Inference Pass
         float[] predictedNormalized;
-        try (NDManager manager = NDManager.newBaseManager();
-             Trainer trainer = trainedModel.newTrainer(new DefaultTrainingConfig(Loss.l2Loss()))) {
-
-            NDArray inputTensor = DataTransformerBlock.create3DTensor(manager, inputWindow);
-            NDArray outputTensor = trainer.forward(new NDList(inputTensor)).singletonOrThrow();
-
-            // Extract the [1, 5] normalized outputs (Open, High, Low, Close, Volume)
-            predictedNormalized = outputTensor.get(0).get(0).toFloatArray();
+        try (NDManager subManager = trainedModel.getNDManager().newSubManager();
+             Predictor<NDList, NDList> predictor = trainedModel.newPredictor(new NoopTranslator())) {
+            NDArray inputTensor = DataTransformerBlock.create3DTensor(subManager, inputWindow);
+            try (NDList outputList = predictor.predict(new NDList(inputTensor))) {
+                predictedNormalized = outputList.singletonOrThrow().get(0).get(0).toFloatArray();
+            }
+        } catch (TranslateException e) {
+            throw new IllegalStateException("Failed to run DJL inference for symbol: " + symbol, e);
         }
 
         // 4. Denormalize prediction outputs back to actual price scale
