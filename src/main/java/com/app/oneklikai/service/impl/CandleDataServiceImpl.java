@@ -126,7 +126,7 @@ public class CandleDataServiceImpl implements CandleDataService {
             ArrayDataset dataset = new ArrayDataset.Builder()
                     .setData(inputTensor)
                     .optLabels(targetTensor)
-                    .setSampling(32, true)
+                    .setSampling(Constants.DAILY_SAMPLING_BATCH_SIZE, true)
                     .build();
 
             log.info("Starting Global Model Training | Stocks: {} | Samples: {} | Epochs: {}...",
