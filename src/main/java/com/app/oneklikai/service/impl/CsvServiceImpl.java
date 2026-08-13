@@ -58,7 +58,7 @@ public class CsvServiceImpl implements CsvService {
             }
 
         } catch (Exception e) {
-            log.error("Error processing csv for {}", symbol, e);
+            throw new IllegalStateException("Data save failed!", e);
         }
     }
 
