@@ -16,7 +16,9 @@ import ai.djl.training.optimizer.Optimizer;
 import ai.djl.training.tracker.Tracker;
 import ai.djl.translate.NoopTranslator;
 import ai.djl.translate.TranslateException;
+import com.app.oneklikai.components.ModelCacheManager;
 import com.app.oneklikai.constant.Constants;
+import com.app.oneklikai.model.TimeFrame;
 import com.app.oneklikai.model.dto.response.PredictionResponse;
 import com.app.oneklikai.model.entity.CandleStick;
 import com.app.oneklikai.model.entity.ModelWeightEntity;
@@ -30,17 +32,12 @@ import com.app.oneklikai.util.MemoryModelSerializer;
 import lombok.RequiredArgsConstructor;
 import lombok.SneakyThrows;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.boot.context.event.ApplicationReadyEvent;
-import org.springframework.context.event.EventListener;
-import org.springframework.data.mongodb.core.MongoTemplate;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneId;
-import java.util.ArrayList;
 import java.util.List;
-import java.util.Optional;
 
 @Slf4j
 @Service
@@ -49,135 +46,84 @@ public class CandleDataServiceImpl implements CandleDataService {
 
     private final CandleStickRepo candleStickRepo;
     private final ModelWeightRepository modelWeightRepository;
-    private final MongoTemplate mongoTemplate;
-
-    @EventListener(ApplicationReadyEvent.class)
-    public void loadGlobalModelFromDatabase() {
-        log.info("Checking for pre-trained global model in database...");
-        Optional<ModelWeightEntity> savedWeight = modelWeightRepository.findById(Constants.DAILY_MODEL_NAME);
-        var model = Constants.DAILY_MODEL;
-        model.setBlock(DataTransformerBlock.buildArchitecture(Constants.DAILY_FEATURE_DIM, Constants.DAILY_EMBED_DIM));
-        if (savedWeight.isPresent()) {
-            try {
-                byte[] weightBytes = savedWeight.get().getWeightBytes();
-                MemoryModelSerializer.deserializeFromBytes(model, weightBytes, Constants.DAILY_MODEL_NAME);
-                log.info("Successfully loaded Global Model weights from DB (Updated: {}, Size: {} KB)",
-                        savedWeight.get().getUpdatedAt(), (weightBytes.length / 1024));
-            } catch (Exception e) {
-                log.error("Failed to load global model weights from DB: {}", e.getMessage(), e);
-            }
-        } else {
-            log.info("No saved global model found in database. Fresh architecture initialized in RAM.");
-        }
-    }
+    private final ModelCacheManager modelCacheManager;
 
     @Override
     @SneakyThrows
-    public void trainModel( int sequenceLength, int epochs, float learningRate) {
-        List<String> symbols = mongoTemplate.findDistinct("symbol", CandleStick.class, String.class);
-        if (symbols.isEmpty()) {
-            return;
-        }
+    public void trainModel(String symbol, int sequenceLength, int epochs, float learningRate) {
+        String stockSymbol = symbol.toUpperCase();
 
-        log.info("Found {} distinct stock symbols in MongoDB. Aggregating dataset...", symbols.size());
+        Model model = Model.newInstance(stockSymbol);
+        try (var stream = candleStickRepo.findBySymbolOrderByTimestampAsc(symbol)) {
+            DatasetBuilder.TrainingBatch batch = DatasetBuilder.buildSlidingWindows(stream, sequenceLength);
+            int numSamples = batch.inputSequences().length;
+            try (NDManager manager = NDManager.newBaseManager()) {
+                model.setBlock(DataTransformerBlock.buildArchitecture(Constants.DAILY_FEATURE_DIM, Constants.DAILY_EMBED_DIM));
+                DefaultTrainingConfig config = new DefaultTrainingConfig(Loss.l2Loss())
+                        .optOptimizer(Optimizer.adam().optLearningRateTracker(Tracker.fixed(learningRate)).build());
 
-        List<float[][]> allInputs = new ArrayList<>();
-        List<float[][]> allTargets = new ArrayList<>();
+                try (Trainer trainer = model.newTrainer(config)) {
+                    trainer.initialize(new Shape(1, sequenceLength, Constants.DAILY_FEATURE_DIM));
+                    NDArray inputTensor = DataTransformerBlock.create3DTensor(manager, batch.inputSequences());
+                    NDArray targetTensor = DataTransformerBlock.create3DTensor(manager, batch.targetCandles());
 
-        for (String symbol : symbols) {
-            try (var stream = candleStickRepo.findBySymbolOrderByTimestampAsc(symbol)) {
-                DatasetBuilder.TrainingBatch batch = DatasetBuilder.buildSlidingWindows(stream, sequenceLength);
-                for (int i = 0; i < batch.inputSequences().length; i++) {
-                    allInputs.add(batch.inputSequences()[i]);
-                    allTargets.add(batch.targetCandles()[i]);
-                }
-            } catch (Exception e) {
-                log.warn("Skipping symbol {} during dataset assembly: {}", symbol, e.getMessage());
-            }
-        }
+                    System.out.printf("Starting Training on %s | Samples: %d | Epochs: %d...%n", stockSymbol, numSamples, epochs);
 
-        if (allInputs.isEmpty()) {
-            throw new IllegalArgumentException("No dataset samples collected across symbols.");
-        }
+                    ArrayDataset dataset = new ArrayDataset.Builder()
+                            .setData(inputTensor)
+                            .optLabels(targetTensor)
+                            .setSampling(Constants.DAILY_SAMPLING_BATCH_SIZE, true)
+                            .build();
 
-        int totalSamples = allInputs.size();
-        log.info("Dataset aggregated successfully. Total Global Training Samples: {}", totalSamples);
+                    for (int epoch = 1; epoch <= epochs; epoch++) {
+                        float accumulatedLoss = 0.0f;
+                        int batchCount = 0;
 
-        float[][][] inputData = allInputs.toArray(new float[0][][]);
-        float[][][] targetData = allTargets.toArray(new float[0][][]);
+                        try {
+                            for (Batch miniBatch : trainer.iterateDataset(dataset)) {
+                                try (GradientCollector gc = trainer.newGradientCollector()) {
+                                    NDArray predictions = trainer.forward(miniBatch.getData()).singletonOrThrow();
+                                    NDArray loss = trainer.getLoss().evaluate(miniBatch.getLabels(), new NDList(predictions));
+                                    gc.backward(loss);
+                                    trainer.step();
+                                    accumulatedLoss += loss.getFloat();
+                                    batchCount++;
+                                }
+                                miniBatch.close();
+                            }
+                        } catch (Exception e) {
+                            throw new RuntimeException(e);
+                        }
 
-        // 3. Train Global Model
-        Model globalModel = Model.newInstance(Constants.DAILY_MODEL_NAME);
-        globalModel.setBlock(DataTransformerBlock.buildArchitecture(Constants.DAILY_FEATURE_DIM, Constants.DAILY_EMBED_DIM));
-
-        DefaultTrainingConfig config = new DefaultTrainingConfig(Loss.l2Loss())
-                .optOptimizer(Optimizer.adam().optLearningRateTracker(Tracker.fixed(learningRate)).build());
-
-        float finalLoss = 0.0f;
-
-        try (NDManager manager = NDManager.newBaseManager();
-             Trainer trainer = globalModel.newTrainer(config)) {
-
-            trainer.initialize(new Shape(1, sequenceLength, Constants.DAILY_FEATURE_DIM));
-
-            NDArray inputTensor = DataTransformerBlock.create3DTensor(manager, inputData);
-            NDArray targetTensor = DataTransformerBlock.create3DTensor(manager, targetData);
-
-            ArrayDataset dataset = new ArrayDataset.Builder()
-                    .setData(inputTensor)
-                    .optLabels(targetTensor)
-                    .setSampling(Constants.DAILY_SAMPLING_BATCH_SIZE, true)
-                    .build();
-
-            log.info("Starting Global Model Training | Stocks: {} | Samples: {} | Epochs: {}...",
-                    symbols.size(), totalSamples, epochs);
-
-            for (int epoch = 1; epoch <= epochs; epoch++) {
-                float accumulatedLoss = 0.0f;
-                int batchCount = 0;
-
-                for (Batch miniBatch : trainer.iterateDataset(dataset)) {
-                    try (GradientCollector gc = trainer.newGradientCollector()) {
-                        NDArray predictions = trainer.forward(miniBatch.getData()).singletonOrThrow();
-                        NDArray loss = trainer.getLoss().evaluate(miniBatch.getLabels(), new NDList(predictions));
-
-                        gc.backward(loss);
-                        trainer.step();
-
-                        accumulatedLoss += loss.getFloat();
-                        batchCount++;
+                        if (epoch % 5 == 0 || epoch == epochs) {
+                            float avgLoss = accumulatedLoss / Math.max(1, batchCount);
+                            System.out.printf("Epoch %d/%d - Avg Batch Loss: %.6f%n", epoch, epochs, avgLoss);
+                        }
                     }
-                    miniBatch.close();
-                }
-
-                finalLoss = accumulatedLoss / Math.max(1, batchCount);
-                if (epoch % 5 == 0 || epoch == epochs) {
-                    log.info("Global Model | Epoch {}/{} - Avg Batch Loss: {}", epoch, epochs, finalLoss);
                 }
             }
         }
 
-        // 4. Save trained weights to MongoDB
-        byte[] weightBytes = MemoryModelSerializer.serializeToBytes(globalModel);
-
-        ModelWeightEntity weightEntity = modelWeightRepository.findById(Constants.DAILY_MODEL_NAME)
-                .orElseGet(() -> ModelWeightEntity.builder().name(Constants.DAILY_MODEL_NAME).build());
+        byte[] weightBytes = MemoryModelSerializer.serializeToBytes(model);
+        ModelWeightEntity weightEntity = modelWeightRepository.findBySymbol(stockSymbol)
+                .orElseGet(() -> ModelWeightEntity.builder().symbol(stockSymbol).build());
 
         weightEntity.setWeightBytes(weightBytes);
         weightEntity.setSequenceLength(sequenceLength);
         weightEntity.setFeatureDim(Constants.DAILY_FEATURE_DIM);
-        weightEntity.setFinalLoss(finalLoss);
         weightEntity.setUpdatedAt(Instant.now());
-
+        weightEntity.setTimeFrame(TimeFrame.DAILY);
         modelWeightRepository.save(weightEntity);
-        Constants.DAILY_MODEL = globalModel;
+        modelCacheManager.setModel(stockSymbol, model, TimeFrame.DAILY);
 
-        log.info("Global Model successfully trained on {} stocks and persisted to MongoDB ({} KB).",
-                symbols.size(), (weightBytes.length / 1024));
+        log.info("Model successfully trained for {} persisted to MongoDB ({} KB).",
+                stockSymbol, (weightBytes.length / 1024));
     }
 
     @Override
-    public PredictionResponse predictNextDay(Model trainedModel, String symbol, int sequenceLength) {
+    public PredictionResponse predictNextDay(String symbol, int sequenceLength) {
+        var trainedModel = modelCacheManager.getModel(symbol, TimeFrame.DAILY).orElseThrow(() -> new RuntimeException("Model " + symbol + " not found."));
+
         String stockSymbol = symbol.toUpperCase();
 
         // 1. Extract the LAST 60 candles to serve as the prompt context

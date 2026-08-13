@@ -1,5 +1,6 @@
 package com.app.oneklikai.model.entity;
 
+import com.app.oneklikai.model.TimeFrame;
 import lombok.*;
 import lombok.experimental.FieldDefaults;
 import org.springframework.data.annotation.Id;
@@ -16,10 +17,11 @@ import java.time.Instant;
 public class ModelWeightEntity {
 
     @Id
-    String name;
+    String id;
+    String symbol;
+    TimeFrame timeFrame;
     byte[] weightBytes;
     int sequenceLength;
     int featureDim;
-    float finalLoss;
     Instant updatedAt;
 }
