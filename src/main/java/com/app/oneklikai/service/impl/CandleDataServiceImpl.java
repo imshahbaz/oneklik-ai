@@ -18,6 +18,7 @@ import ai.djl.translate.NoopTranslator;
 import ai.djl.translate.TranslateException;
 import com.app.oneklikai.components.ModelCacheManager;
 import com.app.oneklikai.constant.Constants;
+import com.app.oneklikai.exceptions.NotFoundException;
 import com.app.oneklikai.model.TimeFrame;
 import com.app.oneklikai.model.dto.response.PredictionResponse;
 import com.app.oneklikai.model.entity.CandleStick;
@@ -52,7 +53,6 @@ public class CandleDataServiceImpl implements CandleDataService {
     @SneakyThrows
     public void trainModel(String symbol, int sequenceLength, int epochs, float learningRate) {
         String stockSymbol = symbol.toUpperCase();
-
         Model model = Model.newInstance(stockSymbol);
         try (var stream = candleStickRepo.findBySymbolOrderByTimestampAsc(symbol)) {
             DatasetBuilder.TrainingBatch batch = DatasetBuilder.buildSlidingWindows(stream, sequenceLength);
@@ -67,7 +67,7 @@ public class CandleDataServiceImpl implements CandleDataService {
                     NDArray inputTensor = DataTransformerBlock.create3DTensor(manager, batch.inputSequences());
                     NDArray targetTensor = DataTransformerBlock.create3DTensor(manager, batch.targetCandles());
 
-                    System.out.printf("Starting Training on %s | Samples: %d | Epochs: %d...%n", stockSymbol, numSamples, epochs);
+                    log.info("Starting Training on {} | Samples: {} | Epochs: {}...", stockSymbol, numSamples, epochs);
 
                     ArrayDataset dataset = new ArrayDataset.Builder()
                             .setData(inputTensor)
@@ -92,12 +92,12 @@ public class CandleDataServiceImpl implements CandleDataService {
                                 miniBatch.close();
                             }
                         } catch (Exception e) {
-                            throw new RuntimeException(e);
+                            throw new IllegalStateException("Training failed!",e);
                         }
 
                         if (epoch % 5 == 0 || epoch == epochs) {
                             float avgLoss = accumulatedLoss / Math.max(1, batchCount);
-                            System.out.printf("Epoch %d/%d - Avg Batch Loss: %.6f%n", epoch, epochs, avgLoss);
+                            log.info("Epoch {}/{} - Avg Batch Loss: {}", epoch, epochs, String.format("%.6f", avgLoss));
                         }
                     }
                 }
@@ -122,14 +122,15 @@ public class CandleDataServiceImpl implements CandleDataService {
 
     @Override
     public PredictionResponse predictNextDay(String symbol, int sequenceLength) {
-        var trainedModel = modelCacheManager.getModel(symbol, TimeFrame.DAILY).orElseThrow(() -> new RuntimeException("Model " + symbol + " not found."));
+        var trainedModel = modelCacheManager.getModel(symbol, TimeFrame.DAILY)
+                .orElseThrow(() -> new NotFoundException("Model not found!"));
 
         String stockSymbol = symbol.toUpperCase();
 
         // 1. Extract the LAST 60 candles to serve as the prompt context
         List<CandleStick> last60 = candleStickRepo.findTop60BySymbolOrderByTimestampDesc(symbol).reversed();
         var latestCandle = last60.getLast();
-        double basePrice = last60.getFirst().getOpen(); // Anchor base price for local normalization
+        double basePrice = last60.getFirst().getOpen();
 
         // 2. Build single input window array: shape [1, 60, 5]
         float[][][] inputWindow = new float[1][sequenceLength][5];
@@ -146,7 +147,7 @@ public class CandleDataServiceImpl implements CandleDataService {
                 predictedNormalized = outputList.singletonOrThrow().get(0).get(0).toFloatArray();
             }
         } catch (TranslateException e) {
-            throw new IllegalStateException("Failed to run DJL inference for symbol: " + symbol, e);
+            throw new IllegalStateException("Processing failed!", e);
         }
 
         // 4. Denormalize prediction outputs back to actual price scale
