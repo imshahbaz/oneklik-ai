@@ -14,8 +14,9 @@ Kaggle setup before running:
     Settings -> Internet -> On   (needed for NSE, Yahoo Finance, HuggingFace)
 
 The `# %%` markers split this into notebook cells if you paste it into Kaggle; it also runs as a
-plain script. Budget roughly 5-8 minutes for the throttled Yahoo download plus 10-25 minutes of
-inference for 200 symbols with N_PATHS = 10 on a T4.
+plain script. Budget roughly 5-8 minutes for the throttled Yahoo download plus 40-90 minutes of
+inference for 200 symbols with Kronos-base and N_PATHS = 10 on a T4. Kaggle sessions cap at 12h,
+so this fits, but drop N_PATHS to 5 for a faster first run.
 """
 
 # %% -------------------------------------------------------------------------------------------
@@ -69,7 +70,7 @@ from model import Kronos, KronosTokenizer, KronosPredictor  # noqa: E402
 PRED_LEN = 10           # trading days to forecast
 CONTEXT_LEN = 512       # Kronos-small / Kronos-base context window
 N_PATHS = 10            # sampled futures per symbol -> percentile bands
-BATCH_SIZE = 25         # symbols per predict_batch call
+BATCH_SIZE = 16         # symbols per predict_batch call; lower this first if the GPU OOMs
 HISTORY = "5y"          # yfinance lookback, must yield more than CONTEXT_LEN candles
 
 # Yahoo Finance throttling. One symbol per request, sequentially, with a pause between each -
@@ -78,8 +79,10 @@ SLEEP_BETWEEN_CALLS = 1.0   # seconds between every Yahoo call
 MAX_RETRIES = 3             # attempts per symbol before giving up
 RETRY_BACKOFF = 5.0         # seconds before first retry, doubled each attempt
 
-MODEL_NAME = "NeoQuasar/Kronos-small"          # Kronos-base (102M) for more capacity
-TOKENIZER_NAME = "NeoQuasar/Kronos-Tokenizer-base"
+# Largest openly released Kronos (102.3M). Kronos-large (499.2M) exists but is not public.
+# Drop to NeoQuasar/Kronos-small (24.7M) if inference is too slow or the GPU runs out of memory.
+MODEL_NAME = "NeoQuasar/Kronos-base"
+TOKENIZER_NAME = "NeoQuasar/Kronos-Tokenizer-base"   # shared by both small and base
 
 TEMPERATURE = 1.0       # higher = more diverse sampled paths
 TOP_P = 0.9
