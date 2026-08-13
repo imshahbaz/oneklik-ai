@@ -137,7 +137,7 @@ public class CandleDataServiceImpl implements CandleDataService {
             testMetrics = computeMetrics(
                     ensemblePredict(ensembleModels, split.test().inputs()),
                     split.test().labels());
-            baselineMetrics = naiveBaseline(split.test().labels());
+            baselineMetrics = constantBaseline(split.train().labels(), split.test().labels());
         }
 
         RunResult best = runs.getFirst();
@@ -454,18 +454,41 @@ public class CandleDataServiceImpl implements CandleDataService {
     }
 
     /**
-     * "Tomorrow closes exactly where today closed", with the best constant direction guess. Any model
-     * that cannot beat this on the test split is not worth deploying.
+     * The best <b>constant</b> predictor: per-head training means, plus the better of the two constant
+     * direction guesses. Any model that cannot beat this on the test split is not worth deploying.
+     *
+     * <p>The means are fitted on training labels and scored on the evaluation split, never fitted on
+     * the split being scored.
+     *
+     * <p>An all-zero baseline ("tomorrow is identical to today") would be a strawman for the high and
+     * low heads, since a high is almost always above the previous close and a low below it. A model
+     * would then appear to win on loss purely by learning that constant offset, which is not skill. For
+     * the close — the head that decides direction — the training mean is a hair above zero, so this
+     * stays equivalent to "no change" exactly where the comparison matters.
      */
-    private static EvaluationMetrics naiveBaseline(float[][][] labels) {
-        EvaluationMetrics flat = computeMetrics(new float[labels.length][Constants.DAILY_TARGET_DIM], labels);
-        double upShare = flat.directionalAccuracyPercent();
+    private static EvaluationMetrics constantBaseline(float[][][] trainLabels, float[][][] evalLabels) {
+        float[] means = new float[Constants.DAILY_TARGET_DIM];
+        for (float[][] label : trainLabels) {
+            for (int f = 0; f < Constants.DAILY_TARGET_DIM; f++) {
+                means[f] += label[0][f];
+            }
+        }
+        for (int f = 0; f < Constants.DAILY_TARGET_DIM; f++) {
+            means[f] /= trainLabels.length;
+        }
+
+        // Every row is the same constant prediction; computeMetrics only reads it.
+        float[][] predictions = new float[evalLabels.length][];
+        Arrays.fill(predictions, means);
+
+        EvaluationMetrics constant = computeMetrics(predictions, evalLabels);
+        double predictedDirectionShare = constant.directionalAccuracyPercent();
         return new EvaluationMetrics(
-                flat.loss(),
-                flat.closeMaePercent(),
-                flat.closeRmsePercent(),
-                Math.max(upShare, 100.0 - upShare),
-                flat.samples());
+                constant.loss(),
+                constant.closeMaePercent(),
+                constant.closeRmsePercent(),
+                Math.max(predictedDirectionShare, 100.0 - predictedDirectionShare),
+                constant.samples());
     }
 
     private static ArrayDataset toDataset(NDManager manager,

@@ -26,8 +26,12 @@ public class Constants {
     /**
      * The cosine schedule is annealed over exactly this many epochs, so this is a real budget rather
      * than a loose upper bound; early stopping is the safety net, not the intended exit.
+     *
+     * <p>Sized from measurement: on 30 years of TITAN the best epoch landed at 24/25/13 across three
+     * seeds, so a 120-epoch budget meant the learning rate never got past ~20% of its decay. At 40 the
+     * anneal actually completes while the model is still improving.
      */
-    public static final int DAILY_EPOCHS = 120;
+    public static final int DAILY_EPOCHS = 40;
     public static final float DAILY_LEARNING_RATE = 1e-3f;
     public static final int DAILY_SAMPLING_BATCH_SIZE = 64;
     public static final int DAILY_EVAL_BATCH_SIZE = 256;
@@ -40,10 +44,13 @@ public class Constants {
     // --- Model selection -------------------------------------------------------------------------
     public static final double DAILY_VALIDATION_FRACTION = 0.10;
     public static final double DAILY_TEST_FRACTION = 0.10;
-    public static final int DAILY_EARLY_STOP_PATIENCE = 30;
+    public static final int DAILY_EARLY_STOP_PATIENCE = 15;
 
-    /** Independent seeded runs; the one with the best validation loss is kept. */
-    public static final int DAILY_TRAINING_RESTARTS = 3;
+    /**
+     * Independent seeded runs, averaged into an ensemble. Ensembling is variance reduction only, so
+     * keep this at 1 while iterating and raise it to 3 for the model you actually deploy.
+     */
+    public static final int DAILY_TRAINING_RESTARTS = 1;
     public static final long DAILY_BASE_SEED = 20260101L;
 
     /** ~4 trading years: recent regimes dominate the fit without discarding older history. */
